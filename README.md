@@ -11,7 +11,7 @@ Il analyse un PC Windows et produit un **rapport noté sur 100**, lisible par le
 
 | Thème | Contrôles |
 |---|---|
-| Poste | Version de Windows et date de fin de support, âge estimé, mémoire, disques, démarrage, mises à jour, redémarrage en attente, batterie |
+| Poste | Version de Windows et date de fin de support, âge estimé, mémoire, disques, démarrage, mises à jour, dernier redémarrage, batterie, historique de fiabilité (indice de stabilité Windows, plantages des 30 derniers jours) |
 | Sécurité | Antivirus et Defender, pare-feu, administrateurs, comptes sans mot de passe, Bureau à distance, UAC, BitLocker, SMBv1 |
 | Internet et Wi-Fi | Latence, pertes, débits descendant et montant, signal Wi-Fi |
 
@@ -39,7 +39,16 @@ Bilan-Express.ps1 -Client "Boulangerie Martin"
 
 Installé ainsi, le rapport s'enregistre sur le Bureau.
 
-`Set-ExecutionPolicy -Scope Process` ne vaut que pour la fenêtre ouverte. Option : `-SansDebit` pour ne pas mesurer le débit (30 secondes de gagnées).
+`Set-ExecutionPolicy -Scope Process` ne vaut que pour la fenêtre ouverte.
+
+Options :
+
+- `-Detaille` ajoute au rapport une annexe **« Détail des vérifications »** : chaque contrôle effectué, la valeur relevée, le seuil appliqué et le résultat (OK, à surveiller, à corriger), y compris tout ce qui est en ordre. C'est la preuve, pour le client, de ce qui a été vérifié. Avec cette option, l'annexe liste aussi les 5 derniers plantages de l'historique de fiabilité (date, programme, type).
+- `-SansDebit` ne mesure pas le débit (30 secondes de gagnées).
+
+```powershell
+.\Bilan-Express.ps1 -Client "Boulangerie Martin" -Detaille
+```
 
 Prérequis : Windows 10 ou 11, PowerShell 5.1. Aucun module à installer. Le guide de démarrage illustré est dans `Bilan-Express_Demarrage.pdf`.
 

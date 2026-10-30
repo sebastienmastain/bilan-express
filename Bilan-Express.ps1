@@ -5,10 +5,11 @@
 .DESCRIPTION
     À lancer sur le PC à analyser. Rien n'est modifié.
         .\Bilan-Express.ps1 -Client "Boulangerie Martin"
+        .\Bilan-Express.ps1 -Client "Boulangerie Martin" -Detaille
 
     Vérifie : version de Windows et fin de support, âge du PC, mémoire, disques, antivirus,
     pare-feu, comptes administrateurs, comptes sans mot de passe, BitLocker, mises à jour,
-    Wi-Fi et connexion Internet (latence, pertes, débits).
+    historique de fiabilité (plantages), Wi-Fi et connexion Internet (latence, pertes, débits).
 
     Version gratuite, limitée à un PC. Le Pack TPE complet ajoute la tournée de tous les PC du
     client (un seul rapport commun), le scan du réseau (box, NAS, imprimantes, caméras, ports à
@@ -22,8 +23,16 @@
 .PARAMETER SansDebit
     Ne mesure pas le débit Internet (gagne environ 30 secondes).
 
+.PARAMETER Detaille
+    Ajoute au rapport une annexe « Détail des vérifications » : chaque contrôle effectué, avec la
+    valeur relevée, le seuil appliqué et le résultat, y compris ce qui est en ordre. Utile pour
+    montrer au client tout ce qui a été vérifié.
+
 .NOTES
-    Pactio · Bilan express — v1.0 (gratuit)
+    Pactio · Bilan express — v1.1 (gratuit)
+    Modifications :
+      1.1 — option -Detaille (annexe « Détail des vérifications ») ; historique de fiabilité de Windows
+            (indice de stabilité, plantages et erreurs Windows des 30 derniers jours).
     Prérequis : Windows 10 / 11, PowerShell 5.1. Aucun module à installer.
     Droits    : fonctionne en utilisateur standard ; en administrateur, le bilan est plus complet.
     Licence   : usage libre, y compris chez vos clients. Redistribution interdite.
@@ -39,12 +48,14 @@ param(
     [string]$Couleur = '#127A70',
     [switch]$SansDebit,
     [switch]$SansReseau,
+    [switch]$Detaille,
     [string]$Dossier
 )
 
 # Version gratuite : un seul PC, sans scan du réseau, sans personnalisation du rapport.
 $Mode = 'Complet'; $SansReseau = $true; $Logo = $null; $Prestataire = ''; $Couleur = '#127A70'
 $PactioPack = 'https://pactiofr.gumroad.com/l/pack-tpe'
+$Version = '1.1'
 
 $ErrorActionPreference = 'Continue'
 $Maintenant = Get-Date
@@ -67,6 +78,21 @@ function Add-Constat {
           [string]$Sujet, [string]$Constat, [string]$Action, [string]$Appareil = $env:COMPUTERNAME)
     $script:Constats.Add([pscustomobject]@{ Domaine = $Domaine; Gravite = $Gravite; Sujet = $Sujet; Constat = $Constat; Action = $Action; Appareil = $Appareil })
 }
+
+# Chaque contrôle effectué, pour l'annexe « Détail des vérifications » (-Detaille) : valeur relevée, seuil, résultat.
+# Sans résultat imposé, il se déduit des constats du même sujet : Critique ou Important = à corriger, Conseil = à surveiller.
+# Valeur vide = donnée inaccessible : « non mesuré », jamais d'erreur.
+$script:Verifs = New-Object System.Collections.Generic.List[object]
+function Add-Verif {
+    param([string]$Theme, [string]$Controle, [string]$Valeur, [string]$Seuil, [string[]]$Sujets = @(), [string]$Resultat)
+    if (-not $Valeur) { $Valeur = '—'; if (-not $Resultat) { $Resultat = 'non mesuré' } }
+    if (-not $Resultat) {
+        $g = @($script:Constats | Where-Object { $Sujets -contains $_.Sujet } | ForEach-Object { $_.Gravite })
+        $Resultat = if ($g -contains 'Critique' -or $g -contains 'Important') { 'à corriger' } elseif ($g.Count) { 'à surveiller' } else { 'OK' }
+    }
+    $script:Verifs.Add([pscustomobject]@{ Theme = $Theme; Controle = $Controle; Valeur = $Valeur; Seuil = $Seuil; Resultat = $Resultat })
+}
+function Format-Nb($v) { ([double]$v).ToString('0.#', [Globalization.CultureInfo]::GetCultureInfo('fr-FR')) }
 #endregion
 
 #region ===== 1. Le poste ===========================================================
@@ -79,6 +105,7 @@ function Get-BilanPoste {
         '26200' = @('Windows 11 25H2', '2027-10-12')
     }
     $c = $script:Constats.Count
+    $script:Verifs.Clear()
     $p = [ordered]@{ Nom = $env:COMPUTERNAME; Date = $Maintenant.ToString('s'); Admin = $EstAdmin }
 
     # Système
@@ -123,6 +150,7 @@ function Get-BilanPoste {
         if ($p.EstServeur) { Add-Constat 'Serveur' 'Critique' 'Serveur hors support' "$($p.Windows) ne reçoit plus de correctifs de sécurité$quand." 'Migrer vers Windows Server 2022 ou 2025' }
         else { Add-Constat 'Postes' 'Critique' 'Windows plus mis à jour' "$($p.Windows) ne reçoit plus de correctifs de sécurité$quand." 'Mettre à niveau vers une version supportée de Windows 11, ou remplacer le poste' }
     }
+    Add-Verif 'Poste' 'Version de Windows' "$($p.Windows)$(if ($p.FinSupport) { ' · correctifs jusqu''au ' + ([datetime]$p.FinSupport).ToString('dd/MM/yyyy') })" 'version encore suivie par Microsoft' 'Windows plus mis à jour', 'Serveur hors support'
 
     # Âge estimé d'après la génération du processeur (la date du BIOS change à chaque mise à jour).
     $p.AgeAns = $null; $annee = $null; $nomCpu = [string]$cpu.Name
@@ -144,12 +172,17 @@ function Get-BilanPoste {
     if ($p.EstServeur) {
         if ($p.MemoireGo -lt 4) { Add-Constat 'Serveur' 'Important' 'Mémoire du serveur insuffisante' "$($p.MemoireGo) Go de mémoire sur le serveur $($p.Nom) : lenteurs des connexions et des partages." 'Passer à 8 Go minimum (16 Go si le serveur héberge des applications)' }
     } elseif ($p.MemoireGo -lt 8) { Add-Constat 'Postes' 'Important' 'Mémoire insuffisante' "$($p.MemoireGo) Go de mémoire : lenteurs probables avec Windows 11 et les navigateurs actuels." 'Ajouter de la mémoire (16 Go recommandés) ou prévoir le renouvellement' }
+    if ($p.EstVM) { Add-Verif 'Poste' 'Âge du PC' 'machine virtuelle' 'moins de 6 ans ; processeur compatible Windows 11 (2017 ou plus récent)' -Resultat 'sans objet' }
+    else { Add-Verif 'Poste' 'Âge du PC' $(if ($annee) { "environ $($p.AgeAns) ans (processeur de $annee)" }) 'moins de 6 ans ; processeur compatible Windows 11 (2017 ou plus récent)' 'PC incompatible Windows 11', 'PC ancien', 'PC vieillissant' }
+    Add-Verif 'Poste' 'Processeur' $nomCpu.Trim() 'hors entrée de gamme (Celeron, Pentium, Atom)' 'Processeur d''entrée de gamme'
+    Add-Verif 'Poste' 'Mémoire' "$($p.MemoireGo) Go" $(if ($p.EstServeur) { '4 Go au moins (serveur)' } else { '8 Go au moins' }) 'Mémoire insuffisante', 'Mémoire du serveur insuffisante'
 
     # Redémarrage
     if ($os.LastBootUpTime) {
         $p.JoursSansRedemarrage = [int]($Maintenant - $os.LastBootUpTime).TotalDays
         if ($p.JoursSansRedemarrage -ge 14) { Add-Constat 'Postes' 'Conseil' 'PC rarement redémarré' "Pas de redémarrage depuis $($p.JoursSansRedemarrage) jours : les mises à jour ne s'appliquent pas complètement." 'Utiliser « Redémarrer » (et non « Arrêter ») au moins une fois par semaine' }
     }
+    Add-Verif 'Poste' 'Dernier redémarrage' $(if ($null -ne $p.JoursSansRedemarrage) { "il y a $($p.JoursSansRedemarrage) jour(s)" }) 'moins de 14 jours' 'PC rarement redémarré'
 
     # Mises à jour
     $derniere = $null
@@ -158,6 +191,7 @@ function Get-BilanPoste {
         $p.JoursSansMiseAJour = [int]($Maintenant - $derniere.ToLocalTime()).TotalDays
         if ($p.JoursSansMiseAJour -gt 45) { Add-Constat 'Postes' 'Important' 'Mises à jour en retard' "Aucune mise à jour Windows installée depuis $($p.JoursSansMiseAJour) jours." 'Débloquer Windows Update (script 03 du pack)' }
     }
+    Add-Verif 'Poste' 'Mises à jour Windows' $(if ($null -ne $p.JoursSansMiseAJour) { "dernière installation il y a $($p.JoursSansMiseAJour) jour(s)" }) '45 jours au plus' 'Mises à jour en retard'
 
     # Disques
     $disques = @()
@@ -166,6 +200,7 @@ function Get-BilanPoste {
         $pct = [math]::Round(100 * $v.FreeSpace / $v.Size)
         $disques += [ordered]@{ Lecteur = $v.DeviceID; TailleGo = [math]::Round($v.Size / 1GB); LibreGo = [math]::Round($v.FreeSpace / 1GB); LibrePct = $pct }
         if ($pct -lt 10) { Add-Constat 'Postes' 'Important' 'Disque presque plein' "Lecteur $($v.DeviceID) : $([math]::Round($v.FreeSpace / 1GB)) Go libres ($pct %)." 'Nettoyer le disque ou augmenter le stockage' }
+        Add-Verif 'Poste' "Espace libre sur $($v.DeviceID)" "$([math]::Round($v.FreeSpace / 1GB)) Go libres sur $([math]::Round($v.Size / 1GB)) Go ($pct %)" '10 % libres au moins' -Resultat $(if ($pct -lt 10) { 'à corriger' } else { 'OK' })
     }
     $p.Disques = $disques
     $physiques = @()
@@ -174,8 +209,12 @@ function Get-BilanPoste {
             $physiques += [ordered]@{ Nom = [string]$d.FriendlyName; Type = [string]$d.MediaType; Sante = [string]$d.HealthStatus; TailleGo = [math]::Round($d.Size / 1GB) }
             if ([string]$d.HealthStatus -ne 'Healthy') { Add-Constat 'Postes' 'Critique' 'Disque en mauvais état' "Le disque « $($d.FriendlyName) » signale un état « $($d.HealthStatus) » : risque de perte de données." 'Sauvegarder immédiatement et remplacer le disque' }
             if ([string]$d.MediaType -eq 'HDD' -and $d.DeviceId -eq '0') { Add-Constat 'Postes' 'Conseil' 'Disque mécanique' "Le système est sur un disque mécanique (HDD) : c'est la première cause de lenteur." 'Remplacer par un SSD (gain de vitesse immédiat, coût modéré)' }
+            $resD = if ([string]$d.HealthStatus -ne 'Healthy') { 'à corriger' } elseif ([string]$d.MediaType -eq 'HDD' -and $d.DeviceId -eq '0') { 'à surveiller' } else { 'OK' }
+            $seuilD = if ($d.DeviceId -eq '0') { 'état « Healthy » ; SSD pour le disque système' } else { 'état « Healthy » (disque secondaire ou externe)' }
+            Add-Verif 'Poste' "État du disque « $($d.FriendlyName) »" "$($d.HealthStatus) · $(if ([string]$d.MediaType -and [string]$d.MediaType -ne 'Unspecified') { $d.MediaType } else { 'type non précisé' }) · $([math]::Round($d.Size / 1GB)) Go" $seuilD -Resultat $resD
         }
     } catch { }
+    if (-not $physiques.Count) { Add-Verif 'Poste' 'État des disques' '' 'état « Healthy » ; SSD pour le disque système' }
     $p.DisquesPhysiques = $physiques
 
     # Antivirus
@@ -198,6 +237,8 @@ function Get-BilanPoste {
         $p.DefenderSignaturesJours = [int]$mp.AntivirusSignatureAge
         if ($mp.AntivirusEnabled -and $mp.AntivirusSignatureAge -gt 7) { Add-Constat 'Sécurité' 'Important' 'Signatures antivirus anciennes' "Les définitions de Microsoft Defender ont $($mp.AntivirusSignatureAge) jours." 'Vérifier les mises à jour Windows / Defender' }
     } catch { }
+    Add-Verif 'Sécurité' 'Antivirus' $(if ($av.Count) { ($av | ForEach-Object { "$($_.Nom) ($(if ($_.Actif) { 'actif' } else { 'inactif' }), $(if ($_.AJour) { 'à jour' } else { 'pas à jour' }))" }) -join ' ; ' }) 'au moins un antivirus actif et à jour' 'Antivirus désactivé', 'Antivirus pas à jour'
+    Add-Verif 'Sécurité' 'Microsoft Defender' $(if ($null -ne $p.DefenderSignaturesJours) { "signatures de $($p.DefenderSignaturesJours) jour(s) ; protection en temps réel $(if ($p.DefenderTempsReel) { 'active' } else { 'inactive' })" }) 'signatures de 7 jours au plus (s''il est l''antivirus actif)' 'Signatures antivirus anciennes'
 
     # Pare-feu
     try {
@@ -205,6 +246,7 @@ function Get-BilanPoste {
         $p.PareFeuDesactive = $off
         if ($off.Count -gt 0) { Add-Constat 'Sécurité' 'Critique' 'Pare-feu désactivé' "Le pare-feu Windows est désactivé (profil : $($off -join ', '))." 'Réactiver le pare-feu Windows' }
     } catch { }
+    Add-Verif 'Sécurité' 'Pare-feu Windows' $(if ($null -ne $p.PareFeuDesactive) { if (@($p.PareFeuDesactive).Count) { 'désactivé : ' + ($p.PareFeuDesactive -join ', ') } else { 'activé sur tous les profils' } }) 'activé sur tous les profils' 'Pare-feu désactivé'
 
     # Comptes
     $p.UtilisateurEstAdmin = $null
@@ -234,6 +276,8 @@ function Get-BilanPoste {
         }
         if ($sansMdp.Count -gt 0) { Add-Constat 'Sécurité' 'Critique' 'Compte sans mot de passe' "Comptes sans aucun mot de passe : $($sansMdp -join ', ')." 'Définir un mot de passe ou désactiver ces comptes' }
     } catch { }
+    Add-Verif 'Sécurité' 'Compte utilisé au quotidien' $(if ($null -ne $p.UtilisateurEstAdmin) { if ($p.UtilisateurEstAdmin) { 'administrateur du PC' } else { 'pas administrateur direct du PC' } }) 'compte standard (hors domaine)' 'Utilisateur administrateur'
+    Add-Verif 'Sécurité' 'Comptes sans mot de passe' $(if ($null -ne $sansMdp) { "$(@($sansMdp).Count) compte(s)" }) 'aucun' 'Compte sans mot de passe'
 
     # Bureau à distance, UAC
     $rdp = $null; try { $rdp = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -ErrorAction Stop).fDenyTSConnections } catch { }
@@ -241,6 +285,8 @@ function Get-BilanPoste {
     if ($rdp -eq 0) { Add-Constat 'Sécurité' 'Conseil' 'Bureau à distance activé' 'Le bureau à distance (RDP) est activé sur ce poste.' 'Le désactiver s''il ne sert pas, ou le réserver au réseau local' }
     $uac = $null; try { $uac = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name EnableLUA -ErrorAction Stop).EnableLUA } catch { }
     if ($uac -eq 0) { Add-Constat 'Sécurité' 'Critique' 'Contrôle de compte (UAC) désactivé' 'Le contrôle de compte utilisateur est désactivé : tout programme s''exécute avec les pleins droits.' 'Réactiver l''UAC' }
+    Add-Verif 'Sécurité' 'Bureau à distance' $(if ($null -ne $rdp) { if ($rdp -eq 0) { 'activé' } else { 'désactivé' } }) 'désactivé s''il ne sert pas' 'Bureau à distance activé'
+    Add-Verif 'Sécurité' 'Contrôle de compte (UAC)' $(if ($null -ne $uac) { if ($uac -eq 0) { 'désactivé' } else { 'activé' } }) 'activé' 'Contrôle de compte (UAC) désactivé'
 
     # SMBv1 et BitLocker (administrateur)
     if ($EstAdmin) {
@@ -251,6 +297,8 @@ function Get-BilanPoste {
                   $grav = if ($cs.PCSystemType -eq 2) { 'Important' } else { 'Conseil' }
                   Add-Constat 'Sécurité' $grav 'Disque non chiffré' 'Le disque n''est pas chiffré (BitLocker) : en cas de vol, toutes les données sont lisibles.' 'Activer BitLocker et sauvegarder la clé de récupération' } } catch { }
     } else { $p.BitLocker = 'non vérifié (lancer en administrateur)' }
+    Add-Verif 'Sécurité' 'Protocole SMBv1' $(if ($null -ne $p.SMB1) { if ($p.SMB1) { 'actif' } else { 'désactivé' } }) 'désactivé' 'Protocole SMBv1 actif'
+    Add-Verif 'Sécurité' 'Chiffrement du disque (BitLocker)' $(if ($EstAdmin -and $p.BitLocker) { if ($p.BitLocker -eq 'On') { 'actif' } else { 'inactif' } }) 'actif (éditions Pro et Entreprise)' 'Disque non chiffré'
 
     # Batterie
     try {
@@ -275,13 +323,69 @@ function Get-BilanPoste {
         } catch { }
     }
     if ($p.BatterieSantePct -and $p.BatterieSantePct -lt 60) { Add-Constat 'Postes' 'Conseil' 'Batterie usée' "La batterie ne tient plus que $($p.BatterieSantePct) % de sa capacité d'origine." 'Remplacer la batterie' }
+    if ($null -ne $p.BatterieSantePct) { Add-Verif 'Poste' 'Batterie' "$($p.BatterieSantePct) % de la capacité d'origine" '60 % au moins' 'Batterie usée' }
+    elseif ($cs.PCSystemType -eq 2) { Add-Verif 'Poste' 'Batterie' '' '60 % au moins' }
 
     # Démarrage
     try { $p.ProgrammesDemarrage = @(Get-CimInstance Win32_StartupCommand -ErrorAction Stop).Count
           if ($p.ProgrammesDemarrage -gt 12) { Add-Constat 'Postes' 'Conseil' 'Démarrage chargé' "$($p.ProgrammesDemarrage) programmes se lancent au démarrage : démarrage lent." 'Faire le tri dans les programmes au démarrage' } } catch { }
+    Add-Verif 'Poste' 'Programmes au démarrage' $(if ($null -ne $p.ProgrammesDemarrage) { "$($p.ProgrammesDemarrage)" }) '12 au plus' 'Démarrage chargé'
+
+    # Historique de fiabilité (Moniteur de fiabilité de Windows). Indice sous 5/10 : plusieurs plantages ces derniers
+    # jours (Windows part de 10 et retire des points à chaque incident) ; plus de 5 en 30 jours : plus d'un par semaine.
+    $fb = Get-Fiabilite
+    $p.Fiabilite = $fb
+    if (($null -ne $fb.Indice -and $fb.Indice -lt 5) -or ($null -ne $fb.Plantages -and $fb.Plantages -gt 5)) {
+        Add-Constat 'Postes' 'Conseil' 'Plantages fréquents' "Historique de fiabilité de Windows : $(Get-TexteFiabilite $fb)." 'Identifier l''application ou le pilote en cause (Moniteur de fiabilité de Windows) et le mettre à jour ou le réinstaller'
+    }
+    Add-Verif 'Poste' 'Historique de fiabilité' (Get-TexteFiabilite $fb) 'indice de stabilité de 5/10 au moins ; 5 plantages au plus en 30 jours' 'Plantages fréquents'
 
     $p.Constats = @($script:Constats.ToArray() | Select-Object -Skip $c)
+    $p.Verifications = $script:Verifs.ToArray()
     return [pscustomobject]$p
+}
+
+function Get-Fiabilite {
+    # Lecture seule. Moniteur de fiabilité : indice de stabilité sur 10 (dernière valeur) et plantages des 30 derniers
+    # jours ; à défaut, journaux Application et Système. Donnée inaccessible : « non mesuré », jamais d'erreur.
+    $f = [ordered]@{ Indice = $null; Plantages = $null; Source = ''; Derniers = @() }
+    $depuis = $Maintenant.AddDays(-30)
+    try {
+        $m = Get-CimInstance Win32_ReliabilityStabilityMetrics -ErrorAction Stop | Sort-Object TimeGenerated -Descending | Select-Object -First 1
+        if ($m) { $f.Indice = [math]::Round([double]$m.SystemStabilityIndex, 1) }
+    } catch { }
+    $types = @{ 'Application Error' = 'Plantage d''application'; 'Application Hang' = 'Application bloquée'; 'Microsoft-Windows-WER-SystemErrorReporting' = 'Erreur grave de Windows (écran bleu)'; 'EventLog' = 'Arrêt inattendu de Windows' }
+    $evts = $null
+    try {
+        $wql = "(SourceName='Application Error' OR SourceName='Application Hang' OR SourceName='Microsoft-Windows-WER-SystemErrorReporting' OR (SourceName='EventLog' AND EventIdentifier=6008)) AND TimeGenerated >= '$([Management.ManagementDateTimeConverter]::ToDmtfDateTime($depuis))'"
+        $evts = @(Get-CimInstance Win32_ReliabilityRecords -Filter $wql -ErrorAction Stop | ForEach-Object {
+            [pscustomobject]@{ Date = $_.TimeGenerated; Application = $(if ([string]$_.SourceName -in 'Application Error', 'Application Hang') { [string]$_.ProductName } else { 'Windows' }); Type = $types[[string]$_.SourceName] } })
+        $f.Source = 'Moniteur de fiabilité'
+    } catch { $evts = $null }
+    if ($null -eq $evts) {
+        # Classe absente ou refusée : journaux de Windows (lisibles en utilisateur standard).
+        try {
+            $lire = { param($Filtre) try { @(Get-WinEvent -FilterHashtable $Filtre -ErrorAction Stop) } catch { if ([string]$_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*') { @() } else { throw } } }
+            $evts = @(& $lire @{ LogName = 'Application'; ProviderName = 'Application Error', 'Application Hang'; StartTime = $depuis } | ForEach-Object {
+                [pscustomobject]@{ Date = $_.TimeCreated; Application = [string]$_.Properties[0].Value; Type = $(if ($_.ProviderName -eq 'Application Hang') { 'Application bloquée' } else { 'Plantage d''application' }) } })
+            $evts += @(& $lire @{ LogName = 'System'; Id = 6008, 1001; StartTime = $depuis } | Where-Object { $_.Id -eq 6008 -or $_.ProviderName -match 'BugCheck|WER-SystemErrorReporting' } | ForEach-Object {
+                [pscustomobject]@{ Date = $_.TimeCreated; Application = 'Windows'; Type = $(if ($_.Id -eq 6008) { 'Arrêt inattendu de Windows' } else { 'Erreur grave de Windows (écran bleu)' }) } })
+            $f.Source = 'journaux de Windows'
+        } catch { $evts = $null }
+    }
+    if ($null -ne $evts) {
+        $f.Plantages = @($evts).Count
+        # Seulement la date, le nom du programme et le type : pas de chemin ni de message (données personnelles possibles).
+        $f.Derniers = @($evts | Sort-Object Date -Descending | Select-Object -First 5 | ForEach-Object { [ordered]@{ Date = ([datetime]$_.Date).ToString('s'); Application = $_.Application; Type = $_.Type } })
+    }
+    return [pscustomobject]$f
+}
+
+function Get-TexteFiabilite($Fb) {
+    $t = @()
+    if ($null -ne $Fb.Indice) { $t += "indice de stabilité de $(Format-Nb $Fb.Indice)/10" }
+    if ($null -ne $Fb.Plantages) { $t += "$($Fb.Plantages) plantage(s) ou erreur(s) Windows en 30 jours" }
+    $t -join ' · '
 }
 #endregion
 
@@ -311,6 +415,7 @@ function Get-BilanInternet {
         $info = Invoke-RestMethod -Uri 'https://ipinfo.io/json' -TimeoutSec 8 -UseBasicParsing
         $net.IPPublique = [string]$info.ip; $net.Operateur = ([string]$info.org -replace '^AS\d+\s+', ''); $net.Ville = [string]$info.city
     } catch { $net.IPPublique = ''; Add-Constat 'Internet' 'Critique' 'Pas d''accès Internet' 'Impossible de joindre Internet depuis ce poste.' 'Vérifier la box et la connexion' }
+    Add-Verif 'Internet et Wi-Fi' 'Accès à Internet' $(if ($net.IPPublique) { 'oui' + $(if ($net.Operateur) { " ($($net.Operateur))" }) } else { 'non' }) 'Internet joignable' 'Pas d''accès Internet'
 
     Etape 'Mesure de la latence et de la stabilité…'
     $net.Latence = Measure-Latence '1.1.1.1'
@@ -318,6 +423,9 @@ function Get-BilanInternet {
     if ($l.PertePct -ge 5) { Add-Constat 'Internet' 'Important' 'Connexion instable' "$($l.PertePct) % des paquets sont perdus : coupures en visio et en téléphonie." 'Vérifier la box, le câblage ou le Wi-Fi ; contacter l''opérateur si besoin' }
     if ($l.MoyenneMs -and $l.MoyenneMs -gt 80) { Add-Constat 'Internet' 'Conseil' 'Latence élevée' "Temps de réponse moyen de $($l.MoyenneMs) ms (normal : moins de 30 ms en fibre)." 'Vérifier le Wi-Fi et la box' }
     if ($l.GigueMs -and $l.GigueMs -gt 30) { Add-Constat 'Internet' 'Conseil' 'Gigue importante' "Variation du temps de réponse de $($l.GigueMs) ms : appels Teams ou téléphoniques hachés." 'Privilégier le câble pour les postes de visio' }
+    Add-Verif 'Internet et Wi-Fi' 'Pertes de paquets' "$($l.PertePct) %" 'moins de 5 %' 'Connexion instable'
+    Add-Verif 'Internet et Wi-Fi' 'Temps de réponse' $(if ($null -ne $l.MoyenneMs) { "$($l.MoyenneMs) ms" }) '80 ms au plus' 'Latence élevée'
+    Add-Verif 'Internet et Wi-Fi' 'Gigue (variation du temps de réponse)' $(if ($null -ne $l.GigueMs) { "$($l.GigueMs) ms" }) '30 ms au plus' 'Gigue importante'
 
     # DNS
     $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -325,6 +433,7 @@ function Get-BilanInternet {
     try { [void][System.Net.Dns]::GetHostAddresses('www.service-public.fr') } catch { }
     $sw.Stop(); $net.DnsMs = [int]$sw.ElapsedMilliseconds
     if ($net.DnsMs -gt 500) { Add-Constat 'Internet' 'Conseil' 'Résolution DNS lente' "Résolution des noms en $($net.DnsMs) ms : ouverture des sites ralentie." 'Utiliser les DNS de l''opérateur ou un DNS public rapide' }
+    Add-Verif 'Internet et Wi-Fi' 'Résolution des noms (DNS)' "$($net.DnsMs) ms" '500 ms au plus' 'Résolution DNS lente'
 
     # Débit
     if (-not $SansDebit -and $net.IPPublique) {
@@ -354,6 +463,8 @@ function Get-BilanInternet {
         if ($d -ne $null -and $d -lt 8) { Add-Constat 'Internet' 'Important' 'Débit descendant faible' "$d Mb/s en réception : lent pour le cloud et la visio." 'Comparer à l''offre souscrite ; vérifier l''éligibilité à la fibre' }
         if ($u -ne $null -and $u -lt 2) { Add-Constat 'Internet' 'Important' 'Débit montant faible' "$u Mb/s en envoi : sauvegardes en ligne et envois de fichiers très lents." 'Vérifier l''éligibilité à la fibre' }
     }
+    Add-Verif 'Internet et Wi-Fi' 'Débit descendant' $(if ($null -ne $net.DebitDescendantMbps) { "$(Format-Nb $net.DebitDescendantMbps) Mb/s" }) '8 Mb/s au moins' 'Débit descendant faible'
+    Add-Verif 'Internet et Wi-Fi' 'Débit montant' $(if ($null -ne $net.DebitMontantMbps) { "$(Format-Nb $net.DebitMontantMbps) Mb/s" }) '2 Mb/s au moins' 'Débit montant faible'
     return [pscustomobject]$net
 }
 #endregion
@@ -367,7 +478,7 @@ function Get-BilanWifi {
     try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
     $sortie = & netsh.exe wlan show interfaces 2>$null
     try { [Console]::OutputEncoding = $encAvant } catch { }
-    if (-not $sortie) { return [pscustomobject]$w }
+    if (-not $sortie) { Add-Verif 'Internet et Wi-Fi' 'Wi-Fi' 'pas de carte Wi-Fi active' 'signal, sécurité et bande, si le poste est en Wi-Fi' -Resultat 'sans objet'; return [pscustomobject]$w }
     foreach ($brut in $sortie) {
         $ligne = ([string]$brut).Replace([string][char]0x00A0, ' ').Replace([string][char]0x202F, ' ').Replace('┬á', ' ')
         if ($ligne -notmatch '^\s+([^:]+?)\s*:\s*(.+)$') { continue }
@@ -388,7 +499,11 @@ function Get-BilanWifi {
         if ($w.SignalPct -lt 50) { Add-Constat 'Réseau' 'Important' 'Wi-Fi faible' "Signal Wi-Fi de $($w.SignalPct) % sur ce poste : lenteurs et déconnexions." 'Rapprocher la borne, ajouter un point d''accès ou passer en câble' }
         if ($w.Securite -match 'WEP|Ouvert|Open') { Add-Constat 'Sécurité' 'Critique' 'Wi-Fi non protégé' "Le réseau Wi-Fi « $($w.SSID) » utilise une sécurité obsolète ou aucune ($($w.Securite))." 'Passer en WPA2 ou WPA3 avec un mot de passe solide' }
         if ($w.Bande -match '2[.,]4' -or ($w.Canal -and [int]($w.Canal -replace '\D', '') -le 14)) { Add-Constat 'Réseau' 'Conseil' 'Wi-Fi en 2,4 GHz' 'Le poste est connecté en 2,4 GHz, la bande la plus lente et la plus encombrée.' 'Activer et privilégier la bande 5 GHz sur la box' }
-    }
+        # Le nom du réseau (SSID) n'est pas repris : inutile pour la preuve des vérifications.
+        Add-Verif 'Internet et Wi-Fi' 'Signal Wi-Fi' "$($w.SignalPct) %" '50 % au moins' 'Wi-Fi faible'
+        Add-Verif 'Internet et Wi-Fi' 'Sécurité du Wi-Fi' $w.Securite 'WPA2 ou WPA3' 'Wi-Fi non protégé'
+        Add-Verif 'Internet et Wi-Fi' 'Bande Wi-Fi' $(if ($w.Bande) { $w.Bande } elseif ($w.Canal) { "canal $($w.Canal)" }) '5 GHz de préférence' 'Wi-Fi en 2,4 GHz'
+    } else { Add-Verif 'Internet et Wi-Fi' 'Wi-Fi' 'poste non connecté en Wi-Fi' 'signal, sécurité et bande, si le poste est en Wi-Fi' -Resultat 'sans objet' }
     return [pscustomobject]$w
 }
 #endregion
@@ -433,9 +548,9 @@ function New-RapportBilan {
     if ($Couleur -notmatch '^#[0-9A-Fa-f]{6}$') { $script:Couleur = '#127A70' }
 
     $postes = @(Get-ChildItem $Dossier -Filter "Poste_$($env:COMPUTERNAME).json" -ErrorAction SilentlyContinue | ForEach-Object { Get-Content $_.FullName -Raw -Encoding UTF8 | ConvertFrom-Json })
-    $reseau = $null; $internet = $null; $wifi = $null; $constatsSite = @()
+    $reseau = $null; $internet = $null; $wifi = $null; $constatsSite = @(); $verifsSite = @()
     $f = Join-Path $Dossier 'Site.json'
-    if (Test-Path $f) { $site = Get-Content $f -Raw -Encoding UTF8 | ConvertFrom-Json; $reseau = $site.Reseau; $internet = $site.Internet; $wifi = $site.Wifi; $constatsSite = @($site.Constats) }
+    if (Test-Path $f) { $site = Get-Content $f -Raw -Encoding UTF8 | ConvertFrom-Json; $reseau = $site.Reseau; $internet = $site.Internet; $wifi = $site.Wifi; $constatsSite = @($site.Constats); $verifsSite = @($site.Verifications) }
     $script:NonMesures = if (Test-Path $f) { @() } else { @('Réseau', 'Internet') }
     # Bilan lancé avec -SansReseau : pas de note Réseau, jamais de faux 100.
     if ((Test-Path $f) -and -not $reseau) { $script:NonMesures += 'Réseau' }
@@ -494,7 +609,10 @@ function New-RapportBilan {
             $age = if ($p.AgeAns) { "$(Nb $p.AgeAns) ans" } else { '—' }
             $lignes += "<tr><td><b>$(Enc $p.Nom)</b><br><span class=""muted"">$(Enc ($p.Fabricant + ' ' + $p.Modele))</span></td><td>$(Enc $p.Windows)</td><td class=""n"">$($p.MemoireGo) Go</td><td class=""n"">$age</td><td>$etat</td></tr>"
         }
-        $tabPostes = "<section><h2>Vos ordinateurs</h2><table><thead><tr><th>Poste</th><th>Windows</th><th class=""n"">Mémoire</th><th class=""n"">Âge</th><th>État</th></tr></thead><tbody>$lignes</tbody></table></section>"
+        # Historique de fiabilité : une ligne sous le tableau (le détail des derniers événements est dans l'annexe -Detaille).
+        $fiab = @($postes | ForEach-Object { $tx = Get-TexteFiabilite $_.Fiabilite; $(if ($postes.Count -gt 1) { (Enc $_.Nom) + ' : ' }) + $(if ($tx) { Enc $tx } else { 'non mesuré' }) })
+        $ligneFiab = "<p class=""muted"" style=""margin:10px 0 0"">Historique de fiabilité de Windows : $($fiab -join ' · ').</p>"
+        $tabPostes = "<section><h2>Vos ordinateurs</h2><table><thead><tr><th>Poste</th><th>Windows</th><th class=""n"">Mémoire</th><th class=""n"">Âge</th><th>État</th></tr></thead><tbody>$lignes</tbody></table>$ligneFiab</section>"
     }
 
     # Serveur et domaine
@@ -531,6 +649,31 @@ function New-RapportBilan {
         $actions += "<tr><td><span class=""b $cls"">$($c0.Gravite)</span></td><td><b>$(Enc $c0.Sujet)</b>$qui<br><span class=""muted"">$(Enc $c0.Constat)</span></td><td>$(Enc $c0.Action)</td></tr>"
     }
     if (-not $actions) { $actions = '<tr><td colspan="3"><b>Aucun point d''attention : votre informatique est en bon état.</b></td></tr>' }
+
+    # Annexe « Détail des vérifications » (-Detaille) : tous les contrôles, y compris ceux qui sont en ordre.
+    $annexe = ''
+    if ($Detaille) {
+        $verifs = @(@($postes | ForEach-Object { $_.Verifications }) + @($verifsSite) | Where-Object { $_ })
+        $clsR = @{ 'OK' = 'v'; 'à surveiller' = 'o'; 'à corriger' = 'r' }
+        $blocs = ''
+        foreach ($th in 'Poste', 'Sécurité', 'Internet et Wi-Fi') {
+            $vt = @($verifs | Where-Object { $_.Theme -eq $th })
+            if (-not $vt.Count) { continue }
+            $lignesV = ($vt | ForEach-Object {
+                $res = [string]$_.Resultat; $cl = $clsR[$res]; if (-not $cl) { $cl = 'g' }
+                "<tr><td>$(Enc $_.Controle)</td><td>$(Enc $_.Valeur)</td><td class=""muted"">$(Enc $_.Seuil)</td><td><span class=""b $cl"">$(Enc ($res.Substring(0, 1).ToUpper() + $res.Substring(1)))</span></td></tr>" }) -join ''
+            $blocs += "<h3>$(Enc $th)</h3><table class=""fix""><thead><tr><th>Contrôle</th><th>Valeur relevée</th><th>Seuil appliqué</th><th>Résultat</th></tr></thead><tbody>$lignesV</tbody></table>"
+            if ($th -eq 'Poste') {
+                $derniers = @($postes | ForEach-Object { @($_.Fiabilite.Derniers) } | Where-Object { $_ })
+                if ($derniers.Count) {
+                    $lignesE = ($derniers | ForEach-Object { "<tr><td>$(([datetime]$_.Date).ToString('dd/MM/yyyy HH:mm'))</td><td>$(Enc $_.Application)</td><td>$(Enc $_.Type)</td></tr>" }) -join ''
+                    $blocs += "<p class=""muted"" style=""margin:16px 0 6px"">Derniers événements de l'historique de fiabilité (30 jours) :</p><table><thead><tr><th>Date</th><th>Programme</th><th>Type</th></tr></thead><tbody>$lignesE</tbody></table>"
+                }
+            }
+        }
+        $nbOk = @($verifs | Where-Object { $_.Resultat -eq 'OK' }).Count
+        $annexe = "<style>.annexe{break-before:page}.annexe h3{font-size:15px;margin:22px 0 6px;color:var(--c)}.annexe td{font-size:13px;padding:8px}.annexe table.fix{table-layout:fixed}.annexe .fix th:first-child{width:28%}.annexe .fix th:last-child{width:17%}</style><section class=""annexe""><h2>Détail des vérifications</h2><p class=""muted"">$($verifs.Count) contrôles effectués, dont $nbOk en ordre, avec la valeur relevée, le seuil appliqué et le résultat. Bilan express v$Version, en lecture seule.</p>$blocs</section>"
+    }
 
     $logoHtml = ''
     if ($Logo -and (Test-Path -LiteralPath $Logo)) {
@@ -571,7 +714,8 @@ $tabDomaine
 $tabPostes
 $tabApp
 <section><h2>Ce que nous vous recommandons</h2><table><thead><tr><th>Priorité</th><th>Constat</th><th>Action proposée</th></tr></thead><tbody>$actions</tbody></table></section>
-<footer>Bilan réalisé sur place, en lecture seule : aucune modification n'a été faite sur vos équipements. $(if ($debitMesure) { 'Mesures du débit indicatives, prises au moment du passage.' } elseif ($internet) { 'Débit non mesuré lors de ce passage : la note Internet porte sur la stabilité de la connexion (temps de réponse, pertes).' })$sign<br>Bilan express Pactio, version gratuite limitée à un PC. Tournée de tout le parc, scan du réseau et rapport à vos couleurs : <a href=""$PactioPack"">Pack TPE</a>.</footer>
+$annexe
+<footer>Bilan réalisé sur place, en lecture seule : aucune modification n'a été faite sur vos équipements. $(if ($debitMesure) { 'Mesures du débit indicatives, prises au moment du passage.' } elseif ($internet) { 'Débit non mesuré lors de ce passage : la note Internet porte sur la stabilité de la connexion (temps de réponse, pertes).' })$sign<br>Bilan express Pactio, version gratuite limitée à un PC. Tournée de tout le parc, scan du réseau et rapport à vos couleurs : <a href="$PactioPack">Pack TPE</a>.</footer>
 </div></body></html>
 "@
     $chemin = Join-Path $Dossier 'Rapport_Bilan_Sante.html'
@@ -588,7 +732,7 @@ function Save-Json($Objet, [string]$Chemin) {
 
 function Start-Bilan {
     Write-Host ""
-    Write-Host "===== Pactio · Bilan express (gratuit) — $Client =====" -ForegroundColor Green
+    Write-Host "===== Pactio · Bilan express v$Version (gratuit) — $Client =====" -ForegroundColor Green
     if (-not $EstAdmin -and $Mode -ne 'Rapport') { Write-Host "  (Lancé sans droits administrateur : BitLocker, SMBv1 et santé des disques ne seront pas tous vérifiés.)" -ForegroundColor DarkYellow }
 
     if ($Mode -in 'Complet', 'Poste') {
@@ -597,12 +741,13 @@ function Start-Bilan {
         Save-Json $poste (Join-Path $Dossier "Poste_$($env:COMPUTERNAME).json")
     }
     if ($Mode -eq 'Complet') {
-        $script:Constats.Clear()
+        $script:Constats.Clear(); $script:Verifs.Clear()
         $site = [ordered]@{ Date = $Maintenant.ToString('s'); DepuisPoste = $env:COMPUTERNAME }
         Etape 'Wi-Fi…'; $site.Wifi = Get-BilanWifi
         if (-not $SansReseau) { $site.Reseau = Get-BilanReseau }
         Etape 'Connexion Internet…'; $site.Internet = Get-BilanInternet
         $site.Constats = $script:Constats.ToArray()
+        $site.Verifications = $script:Verifs.ToArray()
         Save-Json ([pscustomobject]$site) (Join-Path $Dossier 'Site.json')
     }
 
@@ -615,6 +760,7 @@ function Start-Bilan {
     Write-Host ""
     Write-Host "  Dossier du bilan : $Dossier"
     Write-Host "  Rapport client   : Rapport_Bilan_Sante.html (ouvrir, puis Ctrl+P pour un PDF)" -ForegroundColor Green
+    if ($Detaille) { Write-Host "  Annexe « Détail des vérifications » incluse dans le rapport (option -Detaille)." -ForegroundColor Green }
     Write-Host ""
     Write-Host "  Version gratuite : un seul PC, réseau non scanné." -ForegroundColor DarkGray
     Write-Host "  Tous les PC du client dans un seul rapport, scan du réseau, votre logo : Pack TPE" -ForegroundColor Cyan
