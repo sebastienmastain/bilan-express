@@ -29,6 +29,16 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
 
 4. Ouvrez `Bilan_Boulangerie Martin\Rapport_Bilan_Sante.html`, puis Ctrl+P pour en faire un PDF.
 
+**Ou en une commande**, depuis la [PowerShell Gallery](https://www.powershellgallery.com/packages/Bilan-Express) :
+
+```powershell
+Install-Script -Name Bilan-Express -Scope CurrentUser
+Set-ExecutionPolicy -Scope Process Bypass -Force
+Bilan-Express.ps1 -Client "Boulangerie Martin"
+```
+
+Installé ainsi, le rapport s'enregistre sur le Bureau.
+
 `Set-ExecutionPolicy -Scope Process` ne vaut que pour la fenêtre ouverte. Option : `-SansDebit` pour ne pas mesurer le débit (30 secondes de gagnées).
 
 Prérequis : Windows 10 ou 11, PowerShell 5.1. Aucun module à installer. Le guide de démarrage illustré est dans `Bilan-Express_Demarrage.pdf`.
