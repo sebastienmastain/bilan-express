@@ -29,8 +29,9 @@
     montrer au client tout ce qui a été vérifié.
 
 .NOTES
-    Pactio · Bilan express — v1.1 (gratuit)
+    Pactio · Bilan express — v1.1.1 (gratuit)
     Modifications :
+      1.1.1 — disque système repéré par la partition de Windows (et non plus supposé être le disque 0).
       1.1 — option -Detaille (annexe « Détail des vérifications ») ; historique de fiabilité de Windows
             (indice de stabilité, plantages et erreurs Windows des 30 derniers jours).
     Prérequis : Windows 10 / 11, PowerShell 5.1. Aucun module à installer.
@@ -55,7 +56,7 @@ param(
 # Version gratuite : un seul PC, sans scan du réseau, sans personnalisation du rapport.
 $Mode = 'Complet'; $SansReseau = $true; $Logo = $null; $Prestataire = ''; $Couleur = '#127A70'
 $PactioPack = 'https://pactiofr.gumroad.com/l/pack-tpe'
-$Version = '1.1'
+$Version = '1.1.1'
 
 $ErrorActionPreference = 'Continue'
 $Maintenant = Get-Date
@@ -204,13 +205,17 @@ function Get-BilanPoste {
     }
     $p.Disques = $disques
     $physiques = @()
+    # Disque système = celui qui porte la partition de Windows (pas forcément le disque 0)
+    $numSys = $null
+    try { $numSys = [string]((Get-Partition -DriveLetter ($env:SystemDrive.TrimEnd(':')) -ErrorAction Stop | Select-Object -First 1).DiskNumber) } catch { }
     try {
         foreach ($d in (Get-PhysicalDisk -ErrorAction Stop)) {
+            $estSys = ($numSys -and [string]$d.DeviceId -eq $numSys)
             $physiques += [ordered]@{ Nom = [string]$d.FriendlyName; Type = [string]$d.MediaType; Sante = [string]$d.HealthStatus; TailleGo = [math]::Round($d.Size / 1GB) }
             if ([string]$d.HealthStatus -ne 'Healthy') { Add-Constat 'Postes' 'Critique' 'Disque en mauvais état' "Le disque « $($d.FriendlyName) » signale un état « $($d.HealthStatus) » : risque de perte de données." 'Sauvegarder immédiatement et remplacer le disque' }
-            if ([string]$d.MediaType -eq 'HDD' -and $d.DeviceId -eq '0') { Add-Constat 'Postes' 'Conseil' 'Disque mécanique' "Le système est sur un disque mécanique (HDD) : c'est la première cause de lenteur." 'Remplacer par un SSD (gain de vitesse immédiat, coût modéré)' }
-            $resD = if ([string]$d.HealthStatus -ne 'Healthy') { 'à corriger' } elseif ([string]$d.MediaType -eq 'HDD' -and $d.DeviceId -eq '0') { 'à surveiller' } else { 'OK' }
-            $seuilD = if ($d.DeviceId -eq '0') { 'état « Healthy » ; SSD pour le disque système' } else { 'état « Healthy » (disque secondaire ou externe)' }
+            if ([string]$d.MediaType -eq 'HDD' -and $estSys) { Add-Constat 'Postes' 'Conseil' 'Disque mécanique' "Le système est sur un disque mécanique (HDD) : c'est la première cause de lenteur." 'Remplacer par un SSD (gain de vitesse immédiat, coût modéré)' }
+            $resD = if ([string]$d.HealthStatus -ne 'Healthy') { 'à corriger' } elseif ([string]$d.MediaType -eq 'HDD' -and $estSys) { 'à surveiller' } else { 'OK' }
+            $seuilD = if ($estSys) { 'état « Healthy » ; SSD pour le disque système' } else { 'état « Healthy » (disque secondaire ou externe)' }
             Add-Verif 'Poste' "État du disque « $($d.FriendlyName) »" "$($d.HealthStatus) · $(if ([string]$d.MediaType -and [string]$d.MediaType -ne 'Unspecified') { $d.MediaType } else { 'type non précisé' }) · $([math]::Round($d.Size / 1GB)) Go" $seuilD -Resultat $resD
         }
     } catch { }

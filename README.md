@@ -17,7 +17,9 @@ Il analyse un PC Windows et produit un **rapport noté sur 100**, lisible par le
 
 ## Lancer le bilan
 
-1. Copiez `Bilan-Express.ps1` sur une clé USB ou dans `C:\Pactio` sur le PC à analyser.
+1. Téléchargez le script : **[Bilan-Express.ps1 (lien direct)](https://raw.githubusercontent.com/sebastienmastain/bilan-express/main/Bilan-Express.ps1)** (clic droit > « Enregistrer le lien sous »), ou bouton « Download raw file » sur la page du fichier.  
+   ⚠️ Ne faites pas « Enregistrer sous » sur la page GitHub du fichier : vous obtiendriez la page web, pas le script (erreurs « Jeton inattendu » au lancement).  
+   Copiez-le sur une clé USB ou dans `C:\Pactio` sur le PC à analyser.
 2. Ouvrez PowerShell (en administrateur si possible : le bilan est plus complet).
 3. Lancez :
 
