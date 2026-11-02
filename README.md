@@ -81,3 +81,7 @@ Les autres outils Pactio (GPO pour TPE, audit Microsoft 365 et Intune, contrats 
 Usage libre, y compris chez vos clients. Redistribution interdite. Fourni en l'état, à tester sur un périmètre restreint avant un usage général.
 
 Pactio est un nom commercial de Sébastien Mastain EI, administrateur systèmes et réseaux depuis 27 ans (Isère).
+
+## Historique
+
+- **Lanceur 1.1.2 (02/11/2026)** : le lanceur ouvre désormais le bilan dans une fenêtre PowerShell visible, sans commande encodée. L'ancienne version pouvait être signalée à tort par Windows Defender (faux positif). Merci à NINJAMC sur r/Sysadmin_Fr pour le signalement.

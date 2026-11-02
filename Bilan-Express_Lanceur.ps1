@@ -1,7 +1,8 @@
 ﻿<#
     Pactio · Bilan express — lanceur graphique (gratuit)
     Lancé par « Lancer le bilan.cmd ». Ouvre une fenêtre avec les options, puis lance
-    Bilan-Express.ps1 (même dossier) et ouvre le rapport à la fin.
+    Bilan-Express.ps1 (même dossier) dans une fenêtre visible et ouvre le rapport à la fin.
+    v1.1.2 (02/11/2026) : plus de fenêtre cachée ni de commande encodée (faux positif Defender).
     Rien n'est modifié sur le PC : le blocage des scripts n'est levé que pour ce lancement.
 #>
 
@@ -123,26 +124,16 @@ if (-not $client) { $client = 'Client' }
 $dossier = Join-Path $Ici ('Bilan_' + $client)
 $rapport = Join-Path $dossier 'Rapport_Bilan_Sante.html'
 
-function Protect([string]$s) { "'" + ($s -replace "'", "''") + "'" }
+$options = @()
+if ($cDetaille.Checked) { $options += '-Detaille' }
+if ($cDebit.Checked)    { $options += '-SansDebit' }
 
-$options = ''
-if ($cDetaille.Checked) { $options += ' -Detaille' }
-if ($cDebit.Checked)    { $options += ' -SansDebit' }
+# Lancement direct et visible de Bilan-Express.ps1 (rien d'encodé, rien de caché).
+# -NoExit : la fenêtre reste ouverte à la fin pour lire le résumé.
+$client = $client -replace '"', ''
+$args0 = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoExit', '-File', ('"' + $Script + '"'), '-Client', ('"' + $client + '"')) + $options
 
-# Commande exécutée dans une fenêtre PowerShell visible (progression à l'écran),
-# puis ouverture du rapport et attente d'Entrée avant de fermer.
-$commande = @"
-`$Host.UI.RawUI.WindowTitle = 'Pactio · Bilan express'
-& $(Protect $Script) -Client $(Protect $client)$options
-`$r = $(Protect $rapport)
-if (Test-Path -LiteralPath `$r) { Invoke-Item -LiteralPath `$r }
-else { Write-Host '  Le rapport n''a pas été créé : faites une capture de cette fenêtre.' -ForegroundColor Red }
-Write-Host ''
-Read-Host '  Appuyez sur Entrée pour fermer cette fenêtre' | Out-Null
-"@
-$encodee = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($commande))
-$args0 = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodee)
-
+$debut = Get-Date
 try {
     if ($cAdmin.Checked) {
         Start-Process -FilePath 'powershell.exe' -ArgumentList $args0 -Verb RunAs -WorkingDirectory $Ici
@@ -152,5 +143,20 @@ try {
 } catch {
     # Fenêtre « Autoriser cette application à apporter des modifications ? » refusée
     $rep = [System.Windows.Forms.MessageBox]::Show("Les droits administrateur ont été refusés.`n`nLancer quand même le bilan sans ces droits ? (bilan un peu moins complet)", $Titre, 'YesNo', 'Question')
-    if ($rep -eq 'Yes') { Start-Process -FilePath 'powershell.exe' -ArgumentList $args0 -WorkingDirectory $Ici }
+    if ($rep -ne 'Yes') { exit 0 }
+    Start-Process -FilePath 'powershell.exe' -ArgumentList $args0 -WorkingDirectory $Ici
+}
+
+# Ouvre le rapport dès qu'il est créé (attente maximale : 15 minutes).
+Write-Host ''
+Write-Host '  Bilan en cours dans l''autre fenêtre PowerShell.' -ForegroundColor Green
+Write-Host '  Le rapport s''ouvrira tout seul à la fin. Vous pouvez laisser cette fenêtre.'
+$limite = $debut.AddMinutes(15)
+while ((Get-Date) -lt $limite) {
+    if ((Test-Path -LiteralPath $rapport) -and ((Get-Item -LiteralPath $rapport).LastWriteTime -gt $debut)) {
+        Start-Sleep -Seconds 2
+        Invoke-Item -LiteralPath $rapport
+        break
+    }
+    Start-Sleep -Seconds 2
 }
