@@ -15,7 +15,17 @@ Il analyse un PC Windows et produit un **rapport noté sur 100**, lisible par le
 | Sécurité | Antivirus et Defender, pare-feu, administrateurs, comptes sans mot de passe, Bureau à distance, UAC, BitLocker, SMBv1 |
 | Internet et Wi-Fi | Latence, pertes, débits descendant et montant, signal Wi-Fi |
 
-## Lancer le bilan
+## Le plus simple : double-cliquer (aucune commande à taper)
+
+1. Bouton vert **Code** > **Download ZIP**, puis clic droit sur le ZIP > **Extraire tout…**
+2. Dans le dossier extrait, double-cliquez sur **Lancer le bilan**.  
+   Si Windows affiche « Windows a protégé votre ordinateur » (le fichier vient d'Internet) : **Informations complémentaires** > **Exécuter quand même**.
+3. Une fenêtre s'ouvre : nom du client, cases à cocher (administrateur, rapport détaillé, sans mesure du débit), bouton **Lancer le bilan**.
+4. Le rapport s'ouvre tout seul à la fin (Ctrl+P pour en faire un PDF).
+
+Le blocage des scripts de Windows n'est levé que pour ce lancement : rien n'est modifié sur le PC.
+
+## En ligne de commande
 
 1. Téléchargez le script : **[Bilan-Express.ps1 (lien direct)](https://raw.githubusercontent.com/sebastienmastain/bilan-express/main/Bilan-Express.ps1)** (clic droit > « Enregistrer le lien sous »), ou bouton « Download raw file » sur la page du fichier.  
    ⚠️ Ne faites pas « Enregistrer sous » sur la page GitHub du fichier : vous obtiendriez la page web, pas le script (erreurs « Jeton inattendu » au lancement).  
